@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Acesso Único</title>
+  <style>
+    :root{
+      --bg:#0a0e18;
+      --card:#111827;
+      --line:#1c3355;
+      --txt:#e8edf5;
+      --muted:#8a9bb5;
+      --blue:#0a6fde;
+      --green:#10b981;
+      --amber:#f59e0b;
+      --red:#ef4444;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:Segoe UI,Arial,sans-serif;
+      background:var(--bg);
+      color:var(--txt);
+      padding:22px;
+      min-height:100vh;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+    .wrap{width:min(820px,100%)}
+    h1{margin:0 0 6px;font-size:26px}
+    .sub{color:var(--muted);line-height:1.5;margin-bottom:16px}
+    .card{
+      background:var(--card);
+      border:1px solid var(--line);
+      border-radius:16px;
+      padding:16px;
+      box-shadow:0 10px 36px rgba(0,0,0,.35);
+      margin-bottom:14px;
+    }
+    .kv{
+      display:flex;
+      gap:12px;
+      flex-wrap:wrap;
+      margin-top:10px;
+    }
+    .chip{
+      padding:10px 12px;
+      border:1px solid #22304a;
+      background:#0b1220;
+      border-radius:12px;
+      font-size:13px;
+      color:var(--muted);
+    }
+    .chip b{color:var(--txt)}
+    .status{
+      padding:12px 14px;
+      border-radius:12px;
+      border:1px solid #22304a;
+      background:#0b1220;
+      line-height:1.5;
+      font-size:14px;
+    }
+    .ok{border-color:rgba(16,185,129,.35);background:rgba(16,185,129,.08);color:#8ff0ca}
+    .warn{border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.08);color:#ffd48a}
+    .bad{border-color:rgba(239,68,68,.35);background:rgba(239,68,68,.08);color:#ffb4b4}
+
+    button{
+      width:100%;
+      border:none;
+      border-radius:12px;
+      padding:14px 16px;
+      font-weight:800;
+      font-size:15px;
+      cursor:pointer;
+      color:#fff;
+      background:linear-gradient(135deg,var(--blue),#0858b0);
+    }
+    button:disabled{opacity:.55;cursor:not-allowed}
+    .mini{
+      margin-top:10px;
+      color:var(--muted);
+      font-size:13px;
+      line-height:1.5;
+    }
+    code{
+      font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      color:#7dd3fc;
+    }
+    noscript{
+      display:block;
+      margin-top:12px;
+      padding:12px;
+      border:1px solid rgba(239,68,68,.35);
+      border-radius:12px;
+      background:rgba(239,68,68,.08);
+      color:#ffb4b4;
+      line-height:1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🔐 Acesso Único</h1>
+    <div class="sub">
+      Este link é de <b>uso único</b>. Para evitar que pré-visualizações (preview) de apps de mensagem consumam o link,
+      a ativação acontece ao tocar em <b>Ativar</b>.
+    </div>
+
+    <div class="card">
+      <div id="status" class="status">Carregando…</div>
+
+      <div class="kv" id="kv" style="display:none">
+        <div class="chip">Token: <b id="tokenTxt">—</b></div>
+        <div class="chip">App: <b id="appTxt">—</b></div>
+        <div class="chip">Validade: <b id="expTxt">—</b></div>
+      </div>
+
+      <div id="btnArea" style="display:none;margin-top:14px">
+        <button id="btnAtivar">✅ Ativar agora</button>
+        <div class="mini" id="hint"></div>
+      </div>
+
+      <noscript>Ative o JavaScript para validar e usar este link.</noscript>
+    </div>
+
+    <div class="card">
+      <div class="mini">
+        Dica: depois de ativar, você poderá abrir o app pelo atalho na tela inicial (se você adicionar à tela inicial).
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import {
+      getFirestore, doc, getDoc, runTransaction,
+      serverTimestamp
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+    import { firebaseConfig } from "./firebase-config.js";
+
+    function qs(id){ return document.getElementById(id); }
+    function setStatus(text, kind){
+      const el = qs("status");
+      el.className = "status " + (kind || "");
+      el.textContent = text;
+    }
+    function fmtDate(ts){
+      if (!ts) return "—";
+      const d = ts.toDate ? ts.toDate() : new Date(ts);
+      return d.toLocaleString("pt-BR");
+    }
+    function base64urlFromBytes(bytes) {
+      const bin = String.fromCharCode(...bytes);
+      const b64 = btoa(bin);
+      return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    }
+    function getOrCreateClientId() {
+      const key = "link_unico_client_id";
+      let value = localStorage.getItem(key);
+      if (!value) {
+        const bytes = new Uint8Array(12);
+        crypto.getRandomValues(bytes);
+        value = base64urlFromBytes(bytes);
+        localStorage.setItem(key, value);
+      }
+      return value;
+    }
+
+    const params = new URLSearchParams(location.search);
+    const token = params.get("t");
+
+    qs("tokenTxt").textContent = token || "—";
+
+    if (!token || token.length < 8) {
+      setStatus("❌ Link inválido (token ausente).", "bad");
+      throw new Error("No token");
+    }
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    const ref = doc(db, "tokens", token);
+
+    let redirectUrl = "";
+    let tokenData = null;
+
+    async function carregar(){
+      setStatus("Carregando…", "");
+      qs("btnArea").style.display = "none";
+      qs("kv").style.display = "none";
+
+      const snap = await getDoc(ref);
+
+      if (!snap.exists()) {
+        setStatus("❌ Token não encontrado. Peça um novo link ao administrador.", "bad");
+        return;
+      }
+
+      tokenData = snap.data();
+      redirectUrl = tokenData.redirectUrl || "";
+
+      qs("appTxt").textContent = tokenData.appId || tokenData.label || "—";
+      qs("expTxt").textContent = tokenData.expiresAt ? fmtDate(tokenData.expiresAt) : "sem expiração";
+      qs("kv").style.display = "flex";
+
+      if (tokenData.revokedAt) {
+        setStatus("⛔ Este token foi REVOGADO.", "bad");
+        return;
+      }
+
+      if (tokenData.expiresAt && tokenData.expiresAt.toDate().getTime() <= Date.now()) {
+        setStatus("⌛ Este token expirou por tempo.", "warn");
+        return;
+      }
+
+      if (tokenData.usedAt) {
+        setStatus("⚠️ Este token já foi usado em " + fmtDate(tokenData.usedAt) + ".", "warn");
+        return;
+      }
+
+      setStatus("✅ Token válido. Toque em “Ativar agora” para consumir o link e abrir o app.", "ok");
+      qs("btnArea").style.display = "block";
+      qs("hint").innerHTML =
+        "Ao ativar, este token será marcado como <b>usado</b> no servidor e não funcionará novamente.<br>" +
+        "Token: <code>" + token + "</code>";
+    }
+
+    async function ativar(){
+      const btn = qs("btnAtivar");
+      btn.disabled = true;
+      btn.textContent = "Ativando…";
+
+      const clientId = getOrCreateClientId();
+      const ua = (navigator.userAgent || "").slice(0, 280);
+
+      try {
+        await runTransaction(db, async (tx) => {
+          const snap = await tx.get(ref);
+          if (!snap.exists()) throw new Error("not_found");
+          const data = snap.data();
+
+          if (data.revokedAt) throw new Error("revoked");
+          if (data.usedAt) throw new Error("used");
+          if (data.expiresAt && data.expiresAt.toDate().getTime() <= Date.now()) throw new Error("expired");
+
+          tx.update(ref, {
+            usedAt: serverTimestamp(),
+            usedBy: clientId,
+            usedUa: ua
+          });
+        });
+
+        setStatus("✅ Ativado! Redirecionando…", "ok");
+
+        if (!redirectUrl) throw new Error("no_redirect");
+        if (!redirectUrl.startsWith("https://") && !redirectUrl.startsWith("/")) throw new Error("bad_redirect");
+
+        setTimeout(() => { location.href = redirectUrl; }, 650);
+
+      } catch (e) {
+        const msg = String(e && e.message ? e.message : e);
+
+        if (msg.includes("used")) setStatus("⚠️ Já foi usado (alguém ativou antes).", "warn");
+        else if (msg.includes("revoked")) setStatus("⛔ Token revogado.", "bad");
+        else if (msg.includes("expired")) setStatus("⌛ Token expirado.", "warn");
+        else if (msg.includes("no_redirect")) setStatus("✅ Token consumido, mas faltou definir o redirectUrl para abrir o app.", "warn");
+        else setStatus("❌ Erro ao ativar. Tente novamente. (" + msg + ")", "bad");
+
+        btn.disabled = false;
+        btn.textContent = "✅ Ativar agora";
+      }
+    }
+
+    qs("btnAtivar").addEventListener("click", ativar);
+    carregar();
+  </script>
+</body>
+</html>
